@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { ArrowLeft, Camera, Users, Plus, Upload, X, Loader2, ImageIcon } from "lucide-react";
+import { ArrowLeft, Camera, Plus, Upload, X, Loader2, ImageIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +35,6 @@ const NewExpensePage = () => {
     date: new Date().toISOString().split("T")[0],
     amount: initialAmount,
     currency: "INR",
-    splitType: "equal",
     category: "",
     note: initialNote,
     paymentType: "upi",
@@ -122,32 +121,27 @@ const NewExpensePage = () => {
 
   const handleSubmit = async () => {
     if (!user?.id || !form.groupId || !form.amount) return;
+    if (selectedMembers.length === 0) {
+      toast({ variant: "destructive", title: "No participants", description: "Select at least one person to split with." });
+      return;
+    }
+    if (Math.abs(remaining) > 0.01) {
+      toast({ variant: "destructive", title: "Split mismatch", description: customMode === "amount" ? `Remaining ${getCurrencySymbol(form.currency)}${remaining.toFixed(2)} must be zero.` : `Remaining ${remaining.toFixed(1)}% must be zero.` });
+      return;
+    }
     setSubmitting(true);
 
     try {
       const amount = parseFloat(form.amount);
-      let participatorsInvolved: { userId: string; amount: number; splitPercentage?: number }[] = [];
-
-      if (form.splitType === "equal") {
-        // Split equally among all members of the group
-        const members = selectedGroup?.members || [];
-        const perPerson = amount / members.length;
-        participatorsInvolved = members.map((m: any) => ({
-          userId: m.userId,
-          amount: Math.round(perPerson * 100) / 100,
-          splitPercentage: 100 / members.length,
-        }));
-      } else {
-        // Custom split
-        participatorsInvolved = selectedMembers.map(userId => {
-          const val = parseFloat(memberAmounts[userId] || "0");
-          return {
-            userId,
-            amount: customMode === "amount" ? val : Math.round((val / 100) * amount * 100) / 100,
-            splitPercentage: customMode === "percentage" ? val : (val / amount) * 100,
-          };
-        });
-      }
+      // Build participants from selectedMembers + memberAmounts
+      const participatorsInvolved: { userId: string; amount: number; splitPercentage?: number }[] = selectedMembers.map(userId => {
+        const val = parseFloat(memberAmounts[userId] || "0");
+        return {
+          userId,
+          amount: customMode === "amount" ? val : Math.round((val / 100) * amount * 100) / 100,
+          splitPercentage: customMode === "percentage" ? val : (val / amount) * 100,
+        };
+      });
 
       const paymentMethodMap: Record<string, string> = {
         cash: "cash", upi: "upi", debit: "card", credit: "card",
@@ -165,7 +159,7 @@ const NewExpensePage = () => {
         participatorsInvolved,
       });
 
-      toast({ title: "Expense Added!", description: `₹${form.amount} split ${form.splitType === "equal" ? "equally" : "custom"} in ${selectedGroup?.groupName}` });
+      toast({ title: "Expense Added!", description: `${getCurrencySymbol(form.currency)}${form.amount} split in ${selectedGroup?.groupName}` });
       navigate(form.groupId ? `/groups/${form.groupId}` : "/");
     } catch (err: any) {
       toast({ variant: "destructive", title: "Error", description: err.message });
@@ -330,23 +324,7 @@ const NewExpensePage = () => {
             <Label>Amount</Label>
             <Input type="number" placeholder="0.00" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="rounded-xl text-lg font-semibold" />
           </div>
-          <div className="space-y-2">
-            <Label className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> Split between people</Label>
-            <div className="flex gap-2">
-              {["equal", "custom"].map(type => (
-                <button
-                  key={type}
-                  onClick={() => setForm({ ...form, splitType: type })}
-                  className={cn(
-                    "flex-1 py-2.5 rounded-xl text-sm font-medium transition-all duration-200",
-                    form.splitType === type ? "bg-primary text-primary-foreground shadow-md" : "bg-muted text-muted-foreground"
-                  )}
-                >
-                  {type === "equal" ? "Equally" : "Custom"}
-                </button>
-              ))}
-            </div>
-          </div>
+
           <div className="space-y-2">
             <Label>Category</Label>
             <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
@@ -445,10 +423,7 @@ const NewExpensePage = () => {
           )}
 
           <Button
-            onClick={() => {
-              if (form.splitType === "custom") setStep(2);
-              else setStep(3);
-            }}
+            onClick={() => setStep(2)}
             disabled={!form.groupId || !form.amount}
             className="w-full rounded-xl"
           >
@@ -542,7 +517,18 @@ const NewExpensePage = () => {
               : `Remaining: ${remaining.toFixed(1)}% of 100%`}
           </div>
 
-          <Button onClick={() => setStep(3)} className="w-full rounded-xl">
+          <Button
+            onClick={() => setStep(3)}
+            disabled={selectedMembers.length === 0 || Math.abs(remaining) > 0.01}
+            className="w-full rounded-xl"
+            title={
+              selectedMembers.length === 0
+                ? "Select at least one participant"
+                : Math.abs(remaining) > 0.01
+                ? "Assign the full amount before continuing"
+                : ""
+            }
+          >
             Next
           </Button>
         </Card>
@@ -554,9 +540,21 @@ const NewExpensePage = () => {
           <div className="space-y-2 text-sm">
             <div className="flex justify-between"><span className="text-muted-foreground">Group</span><span className="font-medium text-foreground">{selectedGroup?.groupName}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Amount</span><span className="font-medium text-foreground">{getCurrencySymbol(form.currency)}{form.amount}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Split</span><span className="font-medium text-foreground capitalize">{form.splitType}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Participants</span><span className="font-medium text-foreground">{selectedMembers.length} {selectedMembers.length === 1 ? "person" : "people"}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Category</span><span className="font-medium text-foreground">{form.category || "—"}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Payment</span><span className="font-medium text-foreground capitalize">{form.paymentType}</span></div>
+            {selectedMembers.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-border/50 space-y-1">
+                {selectedMembers.map(uid => (
+                  <div key={uid} className="flex justify-between text-xs">
+                    <span className="text-muted-foreground">{uid === user?.id ? "You" : (userMap[uid]?.username || uid.substring(0, 8))}</span>
+                    <span className="font-medium text-foreground">
+                      {getCurrencySymbol(form.currency)}{customMode === "amount" ? (parseFloat(memberAmounts[uid] || "0").toFixed(2)) : (Math.round((parseFloat(memberAmounts[uid] || "0") / 100) * (parseFloat(form.amount) || 0) * 100) / 100).toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="flex justify-between items-center py-2 mt-2 border-t border-border/50">
               <div className="flex flex-col">
                 <span className="font-medium text-foreground">Private Expense</span>
